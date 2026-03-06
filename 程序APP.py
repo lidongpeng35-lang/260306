@@ -1,14 +1,35 @@
+import os
+import subprocess
+import sys
+
+# 1. 自愈补丁：如果云端环境没同步好，强制安装缺失的库
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+try:
+    import joblib
+except ImportError:
+    install('joblib')
+    import joblib
+
 import streamlit as st
-import joblib
 import numpy as np
 import pandas as pd
 import shap
 import matplotlib.pyplot as plt
 
-# 加载保存的随机森林模型
-model = joblib.load('rf.pkl')
+# 2. 核心修复：确保文件名是小写 rf.pkl
+@st.cache_resource
+def load_model():
+    return joblib.load('rf.pkl')
 
-# 特征范围定义（根据提供的特征范围和数据类型）
+try:
+    model = load_model()
+except FileNotFoundError:
+    st.error("错误：找不到模型文件 'rf.pkl'。请确认文件已上传到 GitHub 仓库根目录。")
+    st.stop()
+
+# 特征范围定义
 feature_ranges = {
     "NtproBNP": {"type": "numerical", "min": 0.000, "max": 50000.000, "default": 670.236},
     "BMI": {"type": "numerical", "min": 10.000, "max": 50.000, "default": 24.555},
@@ -17,69 +38,68 @@ feature_ranges = {
     "AtrialFibrillationType": {"type": "categorical", "options": [0, 1], "default": 0},
     "SystolicBP": {"type": "numerical", "min": 50, "max": 200, "default": 116},
     "Age": {"type": "numerical", "min": 18, "max": 100, "default": 71},
-    "AST": {"type": "numerical", "min": 0, "max": 1000, "default": 24},
+    "AST": {"type": "numerical", "min": 0, "max": 1000, "default": 24}
 }
 
-# Streamlit 界面
-st.title("Prediction Model with SHAP Visualization")
+st.title("Cardiovascular Disease Prediction App")
+st.write("Please adjust the sliders and dropdowns to input patient characteristics.")
 
-# 动态生成输入项
-st.header("Enter the following feature values:")
+# 动态生成侧边栏输入项
 feature_values = []
 for feature, properties in feature_ranges.items():
     if properties["type"] == "numerical":
-        value = st.number_input(
+        value = st.sidebar.slider(
             label=f"{feature} ({properties['min']} - {properties['max']})",
             min_value=float(properties["min"]),
             max_value=float(properties["max"]),
             value=float(properties["default"]),
         )
-    elif properties["type"] == "categorical":
-        value = st.selectbox(
+    else:
+        value = st.sidebar.selectbox(
             label=f"{feature} (Select a value)",
             options=properties["options"],
         )
     feature_values.append(value)
 
-# 转换为模型输入格式
 features = np.array([feature_values])
 
-# 预测与 SHAP 可视化
+# 预测与可视化
 if st.button("Predict"):
-    # 模型预测
     predicted_class = model.predict(features)[0]
     predicted_proba = model.predict_proba(features)[0]
-
-    # 提取预测的类别概率
     probability = predicted_proba[predicted_class] * 100
 
-    # 显示预测结果，使用 Matplotlib 渲染指定字体
-    text = f"Based on feature values, predicted possibility of AKI is {probability:.2f}%"
+    # 3. 字体修复：删掉了 fontname='Times New Roman'
+    text = f"Based on feature values, predicted possibility of disease is {probability:.2f}%"
     fig, ax = plt.subplots(figsize=(8, 1))
     ax.text(
         0.5, 0.5, text,
         fontsize=16,
         ha='center', va='center',
-        fontname='Times New Roman',
         transform=ax.transAxes
     )
     ax.axis('off')
-    plt.savefig("prediction_text.png", bbox_inches='tight', dpi=300)
-    st.image("prediction_text.png")
+    st.pyplot(fig) # 直接用这个显示，比保存成图片更快
 
-    # 计算 SHAP 值
+    # SHAP 可视化
+    st.write("### Model Explanation (SHAP Value)")
     explainer = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(pd.DataFrame([feature_values], columns=feature_ranges.keys()))
+    
+    # 兼容处理 shap_values 格式
+    if isinstance(shap_values, list):
+        current_shap_values = shap_values[predicted_class][0]
+        base_value = explainer.expected_value[predicted_class]
+    else:
+        current_shap_values = shap_values[0, :, predicted_class]
+        base_value = explainer.expected_value[predicted_class]
 
-    # 生成 SHAP 力图
-    class_index = predicted_class  # 当前预测类别
+    # 画力导向图
     shap_fig = shap.force_plot(
-        explainer.expected_value[class_index],
-        shap_values[:,:,class_index],
+        base_value, 
+        current_shap_values, 
         pd.DataFrame([feature_values], columns=feature_ranges.keys()),
         matplotlib=True,
+        show=False
     )
-    # 保存并显示 SHAP 图
-    plt.savefig("shap_force_plot.png", bbox_inches='tight', dpi=1200)
-    st.image("shap_force_plot.png")
-
+    st.pyplot(plt.gcf())
